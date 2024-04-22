@@ -67,6 +67,7 @@ https://creativecommons.org/licenses/by/4.0/.
 * Added sbi_pmu_counter_fw_read_hi() in SBI PMU extension
 * Reserved space for SBI implementation specific firmware events
 * Added SBI system suspend extension
+* Added SBI CPPC extension
 
 === Version 1.0.0
 
@@ -151,14 +152,17 @@ This specification uses the following terms and abbreviations:
 |===
 | Term  | Meaning
 
-| SBI   | Supervisor Binary Interface
-| SEE   | Supervisor Execution Environment
+| ACPI  | Advanced Configuration and Power Interface
+| ASID  | Address Space Identifier
+| BMC   | Baseboard Management Controller
+| CPPC  | Collaborative Processor Performance Control
 | EID   | Extension ID
 | FID   | Function ID
 | HSM   | Hart State Management
-| PMU   | Performance Monitoring Unit
 | IPI   | Inter Processor Interrupt
-| ASID  | Address Space Identifier
+| PMU   | Performance Monitoring Unit
+| SBI   | Supervisor Binary Interface
+| SEE   | Supervisor Execution Environment
 | VMID  | Virtual Machine Identifier
 |===
 
@@ -2010,6 +2014,564 @@ The possible error codes returned in `sbiret.error` are shown in
 |===
 | Function Name       | SBI Version | FID | EID
 | sbi_system_suspend  | 2.0         |  0  | 0x53555350
+|===
+
+== CPPC Extension (EID #0x43505043 "CPPC")
+
+ACPI defines the Collaborative Processor Performance Control (CPPC) mechanism,
+which is an abstract and flexible mechanism for the supervisor-mode
+power-management software to collaborate with an entity in the platform to
+manage the performance of the processors.
+
+The SBI CPPC extension provides an abstraction to access the CPPC registers
+through SBI calls. The CPPC registers can be memory locations shared with a
+separate platform entity such as a BMC. Even though CPPC is defined in the ACPI
+specification, it may be possible to implement a CPPC driver based on
+Device Tree.
+
+<<table_cppc_registers>> defines 32-bit identifiers for all CPPC registers
+to be used by the SBI CPPC functions. The first half of the 32-bit register
+space corresponds to the registers as defined by the ACPI specification.
+The second half provides the information not defined in the ACPI specification,
+but is additionally required by the supervisor-mode power-management software.
+
+[#table_cppc_registers]
+.CPPC Registers
+[cols="1,2,1,1,3", width=100%, align="center", options="header"]
+|===
+| Register ID | Register                              | Bit Width | Attribute    | Description
+| 0x00000000  | HighestPerformance                    | 32        | Read-only    | ACPI Spec 6.5: 8.4.6.1.1.1
+| 0x00000001  | NominalPerformance                    | 32        | Read-only    | ACPI Spec 6.5: 8.4.6.1.1.2
+| 0x00000002  | LowestNonlinearPerformance            | 32        | Read-only    | ACPI Spec 6.5: 8.4.6.1.1.4
+| 0x00000003  | LowestPerformance                     | 32        | Read-only    | ACPI Spec 6.5: 8.4.6.1.1.5
+| 0x00000004  | GuaranteedPerformanceRegister         | 32        | Read-only    | ACPI Spec 6.5: 8.4.6.1.1.6
+| 0x00000005  | DesiredPerformanceRegister            | 32        | Read / Write | ACPI Spec 6.5: 8.4.6.1.2.3
+| 0x00000006  | MinimumPerformanceRegister            | 32        | Read / Write | ACPI Spec 6.5: 8.4.6.1.2.2
+| 0x00000007  | MaximumPerformanceRegister            | 32        | Read / Write | ACPI Spec 6.5: 8.4.6.1.2.1
+| 0x00000008  | PerformanceReductionToleranceRegister | 32        | Read / Write | ACPI Spec 6.5: 8.4.6.1.2.4
+| 0x00000009  | TimeWindowRegister                    | 32        | Read / Write | ACPI Spec 6.5: 8.4.6.1.2.5
+| 0x0000000A  | CounterWraparoundTime                 | 32 / 64   | Read-only    | ACPI Spec 6.5: 8.4.6.1.3.1
+| 0x0000000B  | ReferencePerformanceCounterRegister   | 32 / 64   | Read-only    | ACPI Spec 6.5: 8.4.6.1.3.1
+| 0x0000000C  | DeliveredPerformanceCounterRegister   | 32 / 64   | Read-only    | ACPI Spec 6.5: 8.4.6.1.3.1
+| 0x0000000D  | PerformanceLimitedRegister            | 32        | Read / Write | ACPI Spec 6.5: 8.4.6.1.3.2
+| 0x0000000E  | CPPCEnableRegister                    | 32        | Read / Write | ACPI Spec 6.5: 8.4.6.1.4
+| 0x0000000F  | AutonomousSelectionEnable             | 32        | Read / Write | ACPI Spec 6.5: 8.4.6.1.5
+| 0x00000010  | AutonomousActivityWindowRegister      | 32        | Read / Write | ACPI Spec 6.5: 8.4.6.1.6
+| 0x00000011  | EnergyPerformancePreferenceRegister   | 32        | Read / Write | ACPI Spec 6.5: 8.4.6.1.7
+| 0x00000012  | ReferencePerformance                  | 32        | Read-only    | ACPI Spec 6.5: 8.4.6.1.1.3
+| 0x00000013  | LowestFrequency                       | 32        | Read-only    | ACPI Spec 6.5: 8.4.6.1.1.7
+| 0x00000014  | NominalFrequency                      | 32        | Read-only    | ACPI Spec 6.5: 8.4.6.1.1.7
+| 0x00000015 - 0x7FFFFFFF |                           |           |              | Reserved for future use.
+| 0x80000000  | TransitionLatency                     | 32        | Read-only    | Provides the maximum (worst-case) performance
+                                                                                   state transition latency in nanoseconds.
+| 0x80000001 - 0xFFFFFFFF |                           |           |              | Reserved for future use.
+|===
+
+=== Function: Probe CPPC register (FID #0)
+
+[source, C]
+----
+struct sbiret sbi_cppc_probe(uint32_t cppc_reg_id)
+----
+Probe whether the CPPC register as specified by the `cppc_reg_id` parameter
+is implemented or not by the platform.
+
+If the register is implemented, `sbiret.value` will contain the register
+width. If the register is not implemented, `sbiret.value` will be set to 0.
+
+The possible error codes returned in `sbiret.error` are shown in
+<<table_cppc_probe_errors>>.
+
+[#table_cppc_probe_errors]
+.CPPC Probe Errors
+[cols="1,2", width=100%, align="center", options="header"]
+|===
+| Error code              | Description
+| SBI_SUCCESS             | Probe completed successfully.
+| SBI_ERR_INVALID_PARAM   | `cppc_reg_id` is reserved.
+| SBI_ERR_FAILED          | The probe request failed for unspecified or
+                            unknown other reasons.
+|===
+
+=== Function: Read CPPC register (FID #1)
+
+[source, C]
+----
+struct sbiret sbi_cppc_read(uint32_t cppc_reg_id)
+----
+Reads the register as specified in the `cppc_reg_id` parameter and returns the
+value in `sbiret.value`. When supervisor mode XLEN is 32, the `sbiret.value`
+will only contain the lower 32 bits of the CPPC register value.
+
+The possible error codes returned in `sbiret.error` are shown in
+<<table_cppc_read_errors>>.
+
+[#table_cppc_read_errors]
+.CPPC Read Errors
+[cols="1,2", width=100%, align="center", options="header"]
+|===
+| Error code              | Description
+| SBI_SUCCESS             | Read completed successfully.
+| SBI_ERR_INVALID_PARAM   | `cppc_reg_id` is reserved.
+| SBI_ERR_NOT_SUPPORTED   | `cppc_reg_id` is not implemented by the platform.
+| SBI_ERR_DENIED          | `cppc_reg_id` is a write-only register.
+| SBI_ERR_FAILED          | The read request failed for unspecified or
+                            unknown other reasons.
+|===
+
+=== Function: Read CPPC register high bits (FID #2)
+
+[source, C]
+----
+struct sbiret sbi_cppc_read_hi(uint32_t cppc_reg_id)
+----
+Reads the upper 32-bit value of the register specified in the `cppc_reg_id`
+parameter and returns the value in `sbiret.value`. This function always
+returns zero in `sbiret.value` when supervisor mode XLEN is 64 or higher.
+
+The possible error codes returned in `sbiret.error` are shown in
+<<table_cppc_read_hi_errors>>.
+
+[#table_cppc_read_hi_errors]
+.CPPC Read Hi Errors
+[cols="1,2", width=100%, align="center", options="header"]
+|===
+| Error code              | Description
+| SBI_SUCCESS             | Read completed successfully.
+| SBI_ERR_INVALID_PARAM   | `cppc_reg_id` is reserved.
+| SBI_ERR_NOT_SUPPORTED   | `cppc_reg_id` is not implemented by the platform.
+| SBI_ERR_DENIED          | `cppc_reg_id` is a write-only register.
+| SBI_ERR_FAILED          | The read request failed for unspecified or
+                            unknown other reasons.
+|===
+
+=== Function: Write to CPPC register (FID #3)
+
+[source, C]
+----
+struct sbiret sbi_cppc_write(uint32_t cppc_reg_id, uint64_t val)
+----
+Writes the value passed in the `val` parameter to the register as
+specified in the `cppc_reg_id` parameter.
+
+The possible error codes returned in `sbiret.error` are shown in
+<<table_cppc_write_errors>>.
+
+[#table_cppc_write_errors]
+.CPPC Write Errors
+[cols="1,2", width=100%, align="center", options="header"]
+|===
+| Error code              | Description
+| SBI_SUCCESS             | Write completed successfully.
+| SBI_ERR_INVALID_PARAM   | `cppc_reg_id` is reserved.
+| SBI_ERR_NOT_SUPPORTED   | `cppc_reg_id` is not implemented by the platform.
+| SBI_ERR_DENIED          | `cppc_reg_id` is a read-only register.
+| SBI_ERR_FAILED          | The write request failed for unspecified or
+                            unknown other reasons.
+|===
+
+=== Function Listing
+
+[#table_cppc_function_list]
+.CPPC Function List
+[cols="3,2,1,2", width=80%, align="center", options="header"]
+|===
+| Function Name       | SBI Version | FID | EID
+| sbi_cppc_probe      | 2.0         |  0  | 0x43505043
+| sbi_cppc_read       | 2.0         |  1  | 0x43505043
+| sbi_cppc_read_hi    | 2.0         |  2  | 0x43505043
+| sbi_cppc_write      | 2.0         |  3  | 0x43505043
+|===
+
+== Attestation and Measurement Extension (EID #0x41545354 "ATST")
+
+The Attestation and Measurement (ATST) Extension provides a set of functions for
+implementing TCB attestation flows and for extending TCB measurements.
+
+The SBI implementation composes those measurements into a layered attestation
+evidence, as described by the
+https://trustedcomputinggroup.org/wp-content/uploads/DICE-Layering-Architecture-r19_pub.pdf[TCG DICE Layering Architecture].
+
+[#figure_dice_layers]
+.Layered TCB Evidence
+image::sbi_dice.svg[]
+
+The SBI implementation composes those measurements into an attestation evidence
+that can be used by attestation verifiers, either locally or remotely. Depending
+on the evidence verification results, a relying party may decide that the
+measured layered TCB is trustworthy and e.g. release and inject secrets into the
+platform.
+
+[#figure_attestion_flow]
+.TCB Attestation Flow - Background Check Model
+image::sbi_attestation_flow.svg[]
+
+The following functions provide the capabilities and features required to
+implement attestation for usages such as confidential computing, measured boot
+and verified boot.
+
+[#get-capabilities-function,reftext="Get Capabilities"]
+=== Function: Get Attestation and Measurement Capabilities (FID #0)
+
+[source, C]
+----
+struct sbiret sbi_attestation_get_capabilities(unsigned long caps_addr_out
+                                               unsigned long caps_size);
+----
+
+Get the SBI implementation attestation and measurement capabilities.
+
+The reported capabilities allow attestation and measurement implementations to
+build platform agnostic frameworks.
+
+The SBI implementation writes an attestation and measurement capabilities
+structure at the `caps_addr_out` physical address, where the caller must
+allocate `caps_size` bytes.
+The capabilities structure format follows the `ATST_CAPS` format described in
+<<table_attestation_and_measurement_capabilities_format>>.
+
+`caps_size` must be large enough to accomodate for the returned measurement
+capabilities structure. The largest possible capabilities structure is 60 bytes.
+The actual length for the returned capabilities structure is returned through
+`sbiret.value`.
+
+[#table_attestation_hash_algorithms]
+.Attestation Hash Function Algorithms
+[cols="3,2,3", width=80%, align="center", options="header"]
+|===
+| Algorithm Name | Value | Description
+| `SHA-384`      |  0    | SHA-2 with 384 bits long digests
+| `SHA-512`      |  1    | SHA-2 with 512 bits long digests
+| `SHA3-384`     |  2    | SHA-3 with 384 bits long digests
+| `SHA3-512`     |  3    | SHA-3 with 512 bits long digests
+|===
+
+[#table_attestation_certificate_formats]
+.Attestation Certificate Formats
+[cols="3,2,3", width=80%, align="center", options="header"]
+|===
+| Format Name | Value   | Description
+| `CWT`       |  1 << 0 | COSE_Sign1 signed https://datatracker.ietf.org/doc/rfc8392/[CWT] certificates
+| `X509`      |  1 << 1 | X.509 certificate with a https://trustedcomputinggroup.org/wp-content/uploads/TCG_DICE_Attestation_Architecture_r22_02dec2020.pdf[`TCG DICE UCCS`] extension
+|===
+
+[#table_attestation_and_measurement_capabilities_format]
+.Attestation and Measurement Capabilities Format Definition (ATST_CAPS)
+[cols="5,2,3,3,6", align="center", options="header"]
+|===
+| Field Name            | Offset         | Type            | Size (bytes)           | Description
+| TCB_SVN               | 0              | Integer         | 8                      | TCB Security Version Number
+| HASH_ALGORITHM        | 8              | Integer         | 1                     a| Measurement hash function algorithm (see <<table_attestation_hash_algorithms>>) :
+
+                                                                                     * `SHA-384`
+                                                                                     * `SHA-512`
+                                                                                     * `SHA3-384`
+                                                                                     * `SHA3-512`
+                                                                                     * All other values are reserved for future use.
+| CERT_FORMATS          | 9              | Bitmap          | 1                     a| Supported attestation certificate format bitmap, (see <<table_attestation_certificate_formats>>) :
+
+                                                                                     * `CWT`
+                                                                                     * `X509`
+                                                                                     * All other bits are reserved for future use.
+| SMSMT_REGS            | 10             | Integer         | 1                       | Number of static measurement registers
+
+                                                                                     Static measurement registers can not be extended.
+                                                                                     This number must be between 1 and 8 (inclusive).
+| DMSMT_REGS            | 11             | Integer         | 1                       | Number of dynamic measurement registers
+
+                                                                                     Dynamic measurement registers can be extended
+                                                                                     with the <<extend-measurement-function>> function.
+                                                                                     This number must be between 0 and 8 (inclusive).
+| MSMT_REGS_INFO        | 12             | MSMT_REG array m| 3*
+                                                             (SMSMT_REGS+
+                                                              DMSMT_REGS)
+                                                                                    | Measurement registers description array as described in <<table_measurement_register_descriptor>>
+|===
+
+The `ATST_CAPS` fields are:
+
+* `TCB_SVN`: The Security Version Number (SVN) linked to the reported TCB.
+* `HASH_ALGORTHM`: The measurement hash function algorithm.
+The <<extend-measurement-function>> and <<read-measurement-function>> calls
+`measurement_addr` argument must use this hash algorithm.
+* `CERT_FORMATS`: A bitmap of all supported attestation certificate formats.
+<<get-evidence-function>> caller must pass one of the supported formats.
+* `SMSMT_REGS`: The number of static, non-extensible, measurement registers.
+These are used by the platform to measure all boot components. There must be at
+least 1 static measurement register and at most 8.
+* `DMSMT_REGS`: The number of runtime extensible, dynamic measurement registers.
+These are used to store measurements created and passed by the workload itself,
+through a <<extend-measurement-function>> call. This is set to 0 if the
+platform does not allow for extending the TCB  measurement. There must not be
+more than 8 dynamic measurement registers.
+* `MSMT_REGS_INFO`: An array of measurement register descriptors, as defined by
+<<table_measurement_register_descriptor>>. The size of this array is dynamic, and
+depends on the number of static and runtime registers.
+
+[#table_measurement_register_descriptor]
+.Measurement Register (MSMT_REG) Descriptor
+[cols="5,2,2,2,6", align="center", options="header"]
+|===
+| Name           | Offset (bytes) | Type    | Size (bytes) | Description
+| HASH_ALGORITHM | 1              | Integer | 1           a| Measurement hash function algorithm:
+
+                                                               * 0: SHA-384
+                                                               * 1: SHA-512
+                                                               * 2: SHA3-384
+                                                               * 3: SHA3-512
+                                                               * All other values are reserved for future use.
+                                                               This value must match the `HASH_ALGORITHM`
+                                                               reported value in <<table_attestation_and_measurement_capabilities_format>>
+
+| MSMT_TYPE      | 2              | Integer | 1           a| Measurement register type:
+
+                                                             * `0`: Static measurement register
+                                                             * `1`: Dynamic measurement register
+                                                             * All other values are reserved for future use.
+
+| TCG_PCR_INDEX  | 3              | Integer | 1            | https://trustedcomputinggroup.org/wp-content/uploads/TCG_PCClient_PFP_r1p05_v23_pub.pdf[`TCG PCR`] index mapping
+|===
+
+The `MSMT_REG` fields are:
+
+* `HASH_ALGORITHM`: The measurement register hash function algorithm. This value
+must match the `HASH_ALGORITHM` reported value in
+<<table_attestation_and_measurement_capabilities_format>>
+* `MSMT_TYPE`: This is the type of measurement the register holds. It can either
+be static or dynamic.
+* `TCG_PCR_INDEX`: The https://trustedcomputinggroup.org/wp-content/uploads/TCG_PCClient_PFP_r1p05_v23_pub.pdf[`TCG PCR`]
+index the measurement registers map to.
+
+The possible error codes returned in `sbiret.error` are shown in the
+<<table_attestation_capabilities_errors>> below.
+
+[#table_attestation_capabilities_errors]
+.Attestation Capabilities Errors
+[cols="2,3", width=90%, align="center", options="header"]
+|===
+| Error code            | Description
+| SBI_SUCCESS           | The attestation and measurement capabilities were
+                          succesfully reported.
+| SBI_ERR_OVERFLOW      | The attestation and measurement capabilities is larger
+                          than `caps_size`
+|===
+
+
+[#get-evidence-function,reftext="Get Evidence"]
+=== Function: Get Evidence (FID #1)
+
+[source, C]
+----
+struct sbiret sbi_attestation_get_evidence(unsigned long pub_key_info_addr,
+                                           unsigned long pub_key_info_size,
+                                           unsigned long challenge_data_addr,
+                                           unsigned long cert_format,
+                                           unsigned long cert_addr_out,
+                                           unsigned long cert_size);
+----
+
+Retrieve a TCB attestation certificate from the underlying SBI implementation.
+Both the constitution and definition of the TCB and its measurement are
+implementation specific.
+
+The caller must provide its
+https://www.rfc-editor.org/rfc/rfc5280#section-4.1.2.7[X.509 SPKI] formatted
+public key at the `pub_key_info_addr` physical address, which length is
+`pub_key_info_size`.
+
+Additionally, the caller must provide a 64 bytes data blob at the
+`challenge_data_addr` physical address. This blob will be included in the
+generated certificate. Although it can be made of any arbitrary piece of data,
+the blob `challenge_data_addr` points at is generally used for demonstrating
+Evidence freshness to a Relying Party, as part of an attestation challenge
+process.
+
+The `cert_format` parameter specifies which certificate format the SBI
+implementation should use for generating the attestation certificate. It must be
+either an `X.509` or a `CBOR Web Token` formatted certificate, and the caller
+selection must match one of the SBI implementation supported format, as reported
+in `ATST_CAPS`.
+
+==== CBOR Web Token Certificate
+
+The SBI implementation generates a Concise Binary Object Representation (CBOR)
+Web Token (CWT) compliant attestation certificate when the caller passes `CWT`
+as the `cert_format` parameter.
+
+The generated certificate is signed with the platform attestation key, and
+follows the https://datatracker.ietf.org/doc/rfc9052/[`COSE_Sign1`] format.
+
+The CBOR certificate payload is a CWT which claim set is composed of
+the attestation evidence and 2 additional claims:
+
+* *Issuer* is the certificate issuer representation, i.e. the TSM `CDI_ID`.
+* *Subject* is the certificate subject representation, i.e. the TVM `CDI_ID`.
+
+The attestation evidence is an untagged `CWT` composed of one
+https://github.com/ietf-rats-wg/eat[EAT] submodule. Each entry in the EAT
+submodule contains the evidence for one TCB layer. For example, an AP-TEE
+compliant attestation evidence with 3 TCB layers (`Platform`, `TSM` and `TVM`)
+would be formatted as follows:
+
+[#figure_cbor_cert]
+.AP-TEE CBOR Attestation Evidence
+image::sbi_cbor_cert.svg[]
+
+==== X.509 Certificate
+
+When passing `X509` as the certificate format, the SBI implementation will
+generate a https://datatracker.ietf.org/doc/html/rfc5280[X.509] formatted
+certificate at the `cert_addr_out` physical address, where the caller must
+allocate `cert_size` bytes. The generated certificate must be signed with a
+platform attestation key and must include a hash of the data blob pointed by
+`challenge_data_addr`. The generated certificate actual length is in
+`sbiret.value` and must not exceed `cert_size` bytes.
+
+Moreover the generated certificate must contain:
+
+* A X.509 https://trustedcomputinggroup.org/wp-content/uploads/TCG_DICE_Attestation_Architecture_r22_02dec2020.pdf[`TCG DICE UCCS`]
+extension that contains an Unprotected CWT Claim Set (UCCS). This UCCS is the
+attestation evidence associated with the provided public key information
+at `pub_key_info_addr`.
+* A https://oidref.com/2.5.29.49[UserNotice] X.509 extension containing the
+the data blob from `challenge_data_addr`.
+* A https://datatracker.ietf.org/doc/html/rfc5280#section-4.2.1.1[AuthorityKeyIdentifier]
+X.509 extension.
+
+The possible error codes returned in `sbiret.error` are shown in the
+<<table_get_evidence_errors>> below.
+
+[#table_get_evidence_errors]
+.Attestation Get Evidence Errors
+[cols="2,3", width=90%, align="center", options="header"]
+|===
+| Error code          | Description
+| SBI_SUCCESS         | The evidence is generated and the certificate size is
+                        `sbiret.value`.
+| SBI_ERR_FAILED      | The evidence could not be generated.
+| SBI_INVALID_ADDRESS | The Certificate Signing Request address or the
+                        certificate adress is invalid.
+| SBI_INVALID_PARAM   | The Certificate Signinig Request at `cert_request_addr`
+                        is invalid or `evidence_format` is not one of the
+                        evidence formats supported by the platform.
+| SBI_ERR_BUSY        | The evidence could not be generated due to some
+                        resources being busy. The request may be retried.
+| SBI_ERR_OVERFLOW    | The generated evidence is larger than `cert_size`.
+|===
+
+[#extend-measurement-function,reftext="Extend Measurement"]
+=== Function: Extend Measurement (FID #2)
+
+[source, C]
+----
+struct sbiret sbi_attestation_extend_measurement(unsigned long measurement_addr,
+                                                 unsigned long measurement_size,
+                                                 unsigned long measurement_index);
+----
+
+Extend the platform TCB measurement with one additional measurement.
+
+This function provides a
+https://trustedcomputinggroup.org/wp-content/uploads/TCG_D-RTM_Architecture_v1-0_Published_06172013.pdf[DRTM]-like
+capability by allowing the caller to add a software component to the list of the
+TCB layers measurements at any point of the platform lifecycle.
+
+The SBI implementation must manage measurements added through this SBI function
+separately from the static ones. It can choose to maintain them through multiple
+measurement registers, or extend a single one for every
+`sbi_attestation_extend_measurement` call. The `NUM_DMSMT_REGS` field from the
+<<get-capabilities-function>> returned structure (`ATST_CAPS`) is the number of
+measurement registers allocated to support that function:
+
+* If `NUM_DMSMT_REGS` is set to 0, this function is not supported and will
+  always return `SBI_ERR_NOT_SUPPORTED`.
+* If `NUM_DMSMT_REGS` is set to 1, the SBI implementation extends one single
+  measurement register for every `sbi_attestation_extend_measurement` call and
+  the `measurement_index` parameter is ignored.
+* If `NUM_DMSMT_REGS` is greater than 1, the caller must pass a valid
+  `measurement_index` parameter to indicate which measurement register should be
+  extended. `measurement_index` must be one of the `TCG_PCR_INDEX` values
+  reported in the `MSMT_REGS_INFO` field from the <<get-capabilities-function>>
+  returned structure, where `MSMT_TYPE` is set to 1 (Dynamic measurement register).
+
+All measurements added through this SBI function must be included in the TCB
+attestation evidence generated by the <<get-evidence-function>> function.
+
+The measurement data at the `measurement_addr` physical address must be generated
+by a hash function that implements the algorithm reported by the `HASH_ALGORITHM`
+field from the <<get-capabilities-function>> returned structure (`ATST_CAPS`).
+See <<table_attestation_and_measurement_capabilities_format>> for more details.
+
+The measurement data length, as specified by `measurement_size`, must be equal
+to the selected hash algorithm output size.
+
+The possible error codes returned in `sbiret.error` are shown in the
+<<table_extend_measurement_errors>> below.
+
+[#table_extend_measurement_errors]
+.Extend Measurement Errors
+[cols="2,3", width=90%, align="center", options="header"]
+|===
+| Error code            | Description
+| SBI_SUCCESS           | The measurement was succesfully extended.
+| SBI_ERR_FAILED        | The measurement could not be extended.
+| SBI_ERR_BUSY          | The measurement could not be extended due to some
+                          resources being busy. The request may be retried.
+| SBI_INVALID_PARAM     | The `measurement_index` is invalid.
+| SBI_ERR_NOT_SUPPORTED | The function is not supported as the measurement
+                          can not be extended.
+|===
+
+[#read-measurement-function,reftext="Read Measurement"]
+=== Function: Read Measurement (FID #3)
+
+[source, C]
+----
+struct sbiret sbi_attestation_read_measurement(unsigned long measurement_addr_out,
+                                               unsigned long measurement_size,
+                                               unsigned long measurement_index);
+----
+
+Read the value from the measurement register specified in `measurement_index`.
+
+The SBI implementation writes the measurement data at the `measurement_addr_out`
+physical address, where the caller allocate `measurement_size` bytes, which must
+be equal to the measurement hash algorithm output size. The measurement hash
+algorithm is reported by the `HASH_ALGORITHM` field from the
+<<get-capabilities-function>> returned structure (`ATST_CAPS`).
+
+The caller must pass a valid `measurement_index` parameter to indicate which
+measurement register should be read. `measurement_index` must be one of the
+`TCG_PCR_INDEX` values reported in the `MSMT_REGS_INFO` field from the
+<<get-capabilities-function>> returned structure.
+
+The possible error codes returned in `sbiret.error` are shown in the
+<<table_read_measurement_errors>> below.
+
+[#table_read_measurement_errors]
+.Read Measurement Errors
+[cols="2,3", width=90%, align="center", options="header"]
+|===
+| Error code            | Description
+| SBI_SUCCESS           | The measurement was succesfully read.
+| SBI_ERR_FAILED        | The measurement could not be read.
+| SBI_ERR_BUSY          | The measurement could not be read due to some
+                          resources being busy. The request may be retried.
+| SBI_INVALID_PARAM     | The `measurement_index` is invalid.
+|===
+
+
+=== Function Listing
+
+[#table_attestation_and_measurement_function_list]
+.Attestation and Measurement Function List
+[cols="5,2,1,2", width=80%, align="center", options="header"]
+|===
+| Function Name                      | SBI Version | FID | EID
+| sbi_attestation_get_capabilities   | TBD         | 0   | 0x41545354
+| sbi_attestation_get_evidence       | TBD         | 1   | 0x41545354
+| sbi_attestation_extend_measurement | TBD         | 2   | 0x41545354
+| sbi_attestation_read_measurement   | TBD         | 3   | 0x41545354
 |===
 
 == Experimental SBI Extension Space (EIDs #0x08000000 - #0x08FFFFFF)
